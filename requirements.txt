@@ -1,0 +1,13 @@
+streamlit
+sqlalchemy
+python-dotenv
+pandas
+alembic
+pytest
+bcrypt
+passlib[bcrypt]
+reportlab
+psycopg2-binary
+python-dotenv
+email-validator
+psycopg
