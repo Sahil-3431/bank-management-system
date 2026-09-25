@@ -78,6 +78,216 @@ def send_email(recipient_email: str, subject: str, body: str) -> dict:
             "message": f"Email sending failed: {str(e)}",
         }
 
+# ============================================================
+# CUSTOMER ACCOUNT BLOCKED EMAIL
+# ============================================================
+
+def send_customer_blocked_email(
+    recipient_email: str,
+    customer_name: str,
+    customer_code: str,
+):
+    """
+    Send notification when an administrator blocks
+    a customer account.
+    """
+
+    subject = "Your Bank Account Has Been Blocked"
+
+    body = f"""
+    Customer Account Blocked
+
+    Dear {customer_name},
+
+    This is to inform you that your customer account with
+    our Bank Management System has been blocked by an administrator.
+
+    Account Details
+    ------------------------------
+    Customer Name: {customer_name}
+    Customer Code: {customer_code}
+    Account Status: BLOCKED
+
+    Your login access has been temporarily disabled and
+    you will not be able to access your banking account
+    until the account is unblocked.
+
+    If you believe this action was taken by mistake or
+    you need further assistance, please contact the bank
+    administrator/support team.
+
+    Thank you.
+
+    Bank Management System
+    """
+
+    return send_email(
+        recipient_email=recipient_email,
+        subject=subject,
+        body=body.strip(),
+    )
+
+
+# ============================================================
+# CUSTOMER ACCOUNT UNBLOCKED EMAIL
+# ============================================================
+
+def send_customer_unblocked_email(
+    recipient_email: str,
+    customer_name: str,
+    customer_code: str,
+):
+    """
+    Send notification when an administrator unblocks
+    a customer account.
+    """
+
+    subject = "Your Bank Account Has Been Unblocked"
+
+    body = f"""
+    Customer Account Reactivated
+
+    Dear {customer_name},
+
+    This is to inform you that your customer account with
+    our Bank Management System has been successfully unblocked
+    by an administrator.
+
+    Account Details
+    ------------------------------
+    Customer Name: {customer_name}
+    Customer Code: {customer_code}
+    Account Status: ACTIVE
+
+    Your login access has been restored and you can now
+    access your banking account normally.
+
+    If you did not expect this change or need any assistance,
+    please contact the bank administrator/support team.
+
+    Thank you for banking with us.
+
+    Bank Management System
+    """
+
+    return send_email(
+        recipient_email=recipient_email,
+        subject=subject,
+        body=body.strip(),
+    )
+
+
+# ============================================================
+# CUSTOMER ACCOUNT DELETED EMAIL
+# ============================================================
+
+def send_customer_deleted_email(
+    recipient_email: str,
+    customer_name: str,
+    customer_code: str,
+):
+    """
+    Send notification when a customer account is
+    permanently deleted by an administrator.
+    """
+
+    subject = "Your Bank Account Has Been Permanently Deleted"
+
+    body = f"""
+    Customer Account Deleted
+
+    Dear {customer_name},
+
+    This is to inform you that your customer account with
+    our Bank Management System has been permanently deleted
+    by an administrator.
+
+    Account Details
+    ------------------------------
+    Customer Name: {customer_name}
+    Customer Code: {customer_code}
+    Account Status: PERMANENTLY DELETED
+
+    Your customer profile, login access, and associated
+    banking records have been removed from the system.
+
+    This action is permanent and cannot be undone.
+
+    If you believe this action was taken by mistake or
+    you require further information, please contact the
+    bank administrator/support team.
+
+    Thank you.
+
+    Bank Management System
+    """
+
+    return send_email(
+        recipient_email=recipient_email,
+        subject=subject,
+        body=body.strip(),
+    )
+
+# ============================================================
+# CUSTOMER DETAILS UPDATED EMAIL
+# ============================================================
+
+def send_customer_details_updated_email(
+    recipient_email: str,
+    customer_name: str,
+    customer_code: str,
+    changes: dict,
+):
+    """
+    Send notification when an administrator updates
+    customer details.
+
+    The email contains only the fields that were changed.
+    """
+
+    subject = "Your Bank Account Details Have Been Updated"
+
+    changes_text = ""
+
+    for field, values in changes.items():
+        old_value = values.get("old", "")
+        new_value = values.get("new", "")
+
+        changes_text += (
+            f"{field}\n"
+            f"Previous: {old_value}\n"
+            f"Updated:  {new_value}\n\n"
+        )
+
+    body = f"""
+    Customer Details Updated
+
+    Dear {customer_name},
+
+    This is to inform you that your customer details in our
+    Bank Management System have been updated by an administrator.
+
+    Customer Details
+    ------------------------------
+    Customer Name: {customer_name}
+    Customer Code: {customer_code}
+
+    Updated Information
+    ------------------------------
+    {changes_text.strip()}
+
+    If you did not request or expect this change, please contact
+    the bank administrator/support team immediately.
+
+    Thank you.
+
+    Bank Management System
+    """
+    return send_email(
+        recipient_email=recipient_email,
+        subject=subject,
+        body=body.strip(),
+    )
 
 # ============================================================
 # TRANSACTION SUCCESS EMAIL

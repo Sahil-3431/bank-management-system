@@ -173,16 +173,19 @@ def customer_page():
             )
 
         else:
-
             data = []
-
             for customer in customers:
-
+                username = (
+                    customer.user.username
+                    if customer.user
+                    else "-"
+                )
                 data.append(
                     {
                         "Customer Code": (
                             customer.customer_code
                         ),
+                        "Username": username,
                         "Full Name": (
                             customer.full_name
                         ),
@@ -203,10 +206,7 @@ def customer_page():
                     }
                 )
 
-            dataframe = pd.DataFrame(
-                data
-            )
-
+            dataframe = pd.DataFrame(data)
             st.dataframe(
                 dataframe,
                 use_container_width=True,

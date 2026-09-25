@@ -12,6 +12,8 @@ from models import (
     Customer,
     Account,
     Transaction,
+    OTPVerification,
+    PasswordResetOTP,
 )
 from sqlalchemy.orm import Session, joinedload
 from datetime import datetime, timedelta
@@ -19,8 +21,11 @@ from email_service import (
     send_transaction_success_email,
     send_transaction_failed_email,
     send_transfer_success_email,
+    send_customer_blocked_email,
+    send_customer_unblocked_email,
+    send_customer_deleted_email,
+    send_customer_details_updated_email,
 )
-
 
 # ============================================================
 # ADMIN AUTHORIZATION
@@ -196,12 +201,18 @@ def update_customer(
     phone: str,
     address: str = ""
 ):
-    ensure_admin_access()
     """
     Update an existing customer's details.
 
     Customer code is not changed.
+
+    After a successful update, a notification email is sent
+    to the customer's NEW registered email address.
+
+    The email contains only the details that were changed.
     """
+
+    ensure_admin_access()
 
     full_name = full_name.strip()
     email = email.strip().lower()
@@ -272,10 +283,16 @@ def update_customer(
             }
 
         # ----------------------------------------------------
+        # Store OLD customer information
+        # ----------------------------------------------------
+
+        old_full_name = customer.full_name
+        old_email = customer.email
+        old_phone = customer.phone
+        old_address = customer.address or ""
+
+        # ----------------------------------------------------
         # Check duplicate email
-        #
-        # Same customer's existing email is allowed.
-        # Another customer's email is not allowed.
         # ----------------------------------------------------
 
         existing_email = (
@@ -297,7 +314,48 @@ def update_customer(
             }
 
         # ----------------------------------------------------
-        # Update details
+        # Detect actual changes
+        # ----------------------------------------------------
+
+        changes = {}
+
+        if old_full_name != full_name:
+            changes["Full Name"] = {
+                "old": old_full_name,
+                "new": full_name,
+            }
+
+        if old_email != email:
+            changes["Email Address"] = {
+                "old": old_email,
+                "new": email,
+            }
+
+        if old_phone != phone:
+            changes["Phone Number"] = {
+                "old": old_phone,
+                "new": phone,
+            }
+
+        if old_address != address:
+            changes["Address"] = {
+                "old": old_address or "Not provided",
+                "new": address or "Not provided",
+            }
+
+        # ----------------------------------------------------
+        # No changes detected
+        # ----------------------------------------------------
+
+        if not changes:
+            return {
+                "success": True,
+                "message": "No changes were made.",
+                "customer": customer,
+            }
+
+        # ----------------------------------------------------
+        # Update customer details
         # ----------------------------------------------------
 
         customer.full_name = full_name
@@ -305,12 +363,50 @@ def update_customer(
         customer.phone = phone
         customer.address = address or None
 
+        # ----------------------------------------------------
+        # Save changes
+        # ----------------------------------------------------
+
         db.commit()
         db.refresh(customer)
 
+        # ----------------------------------------------------
+        # Send notification to NEW registered email
+        # ----------------------------------------------------
+
+        email_result = send_customer_details_updated_email(
+            recipient_email=email,
+            customer_name=full_name,
+            customer_code=customer.customer_code,
+            changes=changes,
+        )
+
+        # ----------------------------------------------------
+        # Email sent successfully
+        # ----------------------------------------------------
+
+        if email_result.get("success"):
+            return {
+                "success": True,
+                "message": (
+                    "Customer details updated successfully. "
+                    "A notification email has been sent to "
+                    f"{email}."
+                ),
+                "customer": customer,
+            }
+
+        # ----------------------------------------------------
+        # Database updated but email failed
+        # ----------------------------------------------------
+
         return {
             "success": True,
-            "message": "Customer details updated successfully.",
+            "message": (
+                "Customer details updated successfully, but "
+                "the notification email could not be sent. "
+                f"Email error: {email_result.get('message')}"
+            ),
             "customer": customer,
         }
 
@@ -338,7 +434,12 @@ def get_all_customers():
     try:
         customers = (
             db.query(Customer)
-            .order_by(Customer.created_at.desc())
+            .options(
+                joinedload(Customer.user)
+            )
+            .order_by(
+                Customer.created_at.desc()
+            )
             .all()
         )
         return customers
@@ -356,23 +457,39 @@ def search_customers(search_term: str):
         return get_all_customers()
     db = SessionLocal()
     try:
-        search_pattern = (f"%{search_term}%")
+        search_pattern = f"%{search_term}%"
         customers = (
             db.query(Customer)
+            .options(
+                joinedload(Customer.user)
+            )
             .filter(
                 or_(
-                    Customer.customer_code.ilike(search_pattern),
-                    Customer.full_name.ilike(search_pattern),
-                    Customer.email.ilike(search_pattern),
-                    Customer.phone.ilike(search_pattern),
+                    Customer.customer_code.ilike(
+                        search_pattern
+                    ),
+                    Customer.full_name.ilike(
+                        search_pattern
+                    ),
+                    Customer.email.ilike(
+                        search_pattern
+                    ),
+                    Customer.phone.ilike(
+                        search_pattern
+                    ),
+                    Customer.user.has(
+                        User.username.ilike(
+                            search_pattern
+                        )
+                    ),
                 )
             )
             .order_by(
-                Customer.created_at.desc())
-            .all()
+                Customer.created_at.desc()
             )
+            .all()
+        )
         return customers
-
     finally:
         db.close()
 
@@ -1961,9 +2078,12 @@ def get_customer_profile(customer_id: int):
 
 def block_customer(customer_id):
     """
-    Block a customer.
+    Block a customer and disable the linked login account.
 
     Only administrators are allowed to perform this operation.
+
+    A notification email is sent to the customer's
+    registered email address after successful blocking.
     """
 
     ensure_admin_access()
@@ -1983,25 +2103,74 @@ def block_customer(customer_id):
         if not customer.is_active:
             return False, "Customer is already blocked."
 
+        # ----------------------------------------------------
+        # Store email information before database operation
+        # ----------------------------------------------------
+
+        customer_email = customer.email
+        customer_name = customer.full_name
+        customer_code = customer.customer_code
+
+        # ----------------------------------------------------
+        # Block customer
+        # ----------------------------------------------------
+
         customer.is_active = False
 
+        # ----------------------------------------------------
         # Disable linked login account
+        # ----------------------------------------------------
+
         user = (
             session.query(User)
-            .filter(User.customer_id == customer.id)
+            .filter(
+                User.customer_id == customer.id
+            )
             .first()
         )
 
         if user:
             user.is_active = False
 
+        # ----------------------------------------------------
+        # Save database changes
+        # ----------------------------------------------------
+
         session.commit()
 
-        return True, "Customer blocked successfully."
+        # ----------------------------------------------------
+        # Send notification email
+        # ----------------------------------------------------
+
+        email_result = send_customer_blocked_email(
+            recipient_email=customer_email,
+            customer_name=customer_name,
+            customer_code=customer_code,
+        )
+
+        if email_result.get("success"):
+            return (
+                True,
+                "Customer blocked successfully. "
+                "Notification email has been sent to "
+                f"{customer_email}.",
+            )
+
+        return (
+            True,
+            "Customer blocked successfully, but the "
+            "notification email could not be sent. "
+            f"Email error: {email_result.get('message')}",
+        )
 
     except Exception as e:
+
         session.rollback()
-        return False, f"Failed to block customer: {str(e)}"
+
+        return (
+            False,
+            f"Failed to block customer: {str(e)}",
+        )
 
     finally:
         session.close()
@@ -2009,9 +2178,12 @@ def block_customer(customer_id):
 
 def unblock_customer(customer_id):
     """
-    Unblock a customer.
+    Unblock a customer and re-enable the linked login account.
 
     Only administrators are allowed to perform this operation.
+
+    A notification email is sent to the customer's
+    registered email address after successful unblocking.
     """
 
     ensure_admin_access()
@@ -2031,25 +2203,74 @@ def unblock_customer(customer_id):
         if customer.is_active:
             return False, "Customer is already active."
 
+        # ----------------------------------------------------
+        # Store email information before database operation
+        # ----------------------------------------------------
+
+        customer_email = customer.email
+        customer_name = customer.full_name
+        customer_code = customer.customer_code
+
+        # ----------------------------------------------------
+        # Unblock customer
+        # ----------------------------------------------------
+
         customer.is_active = True
 
+        # ----------------------------------------------------
         # Re-enable linked login account
+        # ----------------------------------------------------
+
         user = (
             session.query(User)
-            .filter(User.customer_id == customer.id)
+            .filter(
+                User.customer_id == customer.id
+            )
             .first()
         )
 
         if user:
             user.is_active = True
 
+        # ----------------------------------------------------
+        # Save database changes
+        # ----------------------------------------------------
+
         session.commit()
 
-        return True, "Customer unblocked successfully."
+        # ----------------------------------------------------
+        # Send notification email
+        # ----------------------------------------------------
+
+        email_result = send_customer_unblocked_email(
+            recipient_email=customer_email,
+            customer_name=customer_name,
+            customer_code=customer_code,
+        )
+
+        if email_result.get("success"):
+            return (
+                True,
+                "Customer unblocked successfully. "
+                "Notification email has been sent to "
+                f"{customer_email}.",
+            )
+
+        return (
+            True,
+            "Customer unblocked successfully, but the "
+            "notification email could not be sent. "
+            f"Email error: {email_result.get('message')}",
+        )
 
     except Exception as e:
+
         session.rollback()
-        return False, f"Failed to unblock customer: {str(e)}"
+
+        return (
+            False,
+            f"Failed to unblock customer: {str(e)}",
+        )
 
     finally:
         session.close()
@@ -2062,6 +2283,9 @@ def delete_customer(customer_id):
 
     A customer cannot be deleted if any linked account
     has a non-zero balance.
+
+    After successful deletion, a notification email is sent
+    to the customer's registered email address.
     """
 
     ensure_admin_access()
@@ -2077,6 +2301,14 @@ def delete_customer(customer_id):
 
         if not customer:
             return False, "Customer not found."
+
+        # ----------------------------------------------------
+        # Store customer information BEFORE deletion
+        # ----------------------------------------------------
+
+        customer_email = customer.email
+        customer_name = customer.full_name
+        customer_code = customer.customer_code
 
         # ----------------------------------------------------
         # Get all accounts belonging to the customer
@@ -2119,6 +2351,48 @@ def delete_customer(customer_id):
             account.id
             for account in accounts
         ]
+
+        # ----------------------------------------------------
+        # Delete OTP verification records linked to accounts
+        # ----------------------------------------------------
+
+        if account_ids:
+
+            (
+                session.query(OTPVerification)
+                .filter(
+                    OTPVerification.account_id.in_(account_ids)
+                )
+                .delete(
+                    synchronize_session=False
+                )
+            )
+
+            (
+                session.query(OTPVerification)
+                .filter(
+                    OTPVerification.reference_account_id.in_(
+                        account_ids
+                    )
+                )
+                .delete(
+                    synchronize_session=False
+                )
+            )
+
+        # ----------------------------------------------------
+        # Delete password reset OTP records for customer
+        # ----------------------------------------------------
+
+        (
+            session.query(PasswordResetOTP)
+            .filter(
+                PasswordResetOTP.customer_id == customer.id
+            )
+            .delete(
+                synchronize_session=False
+            )
+        )
 
         # ----------------------------------------------------
         # Remove references to these accounts from
@@ -2193,9 +2467,41 @@ def delete_customer(customer_id):
 
         session.delete(customer)
 
+        # ----------------------------------------------------
+        # Commit all database changes
+        # ----------------------------------------------------
+
         session.commit()
 
-        return True, "Customer deleted successfully."
+        # ----------------------------------------------------
+        # Send deletion notification email
+        # AFTER successful database deletion
+        # ----------------------------------------------------
+
+        email_result = send_customer_deleted_email(
+            recipient_email=customer_email,
+            customer_name=customer_name,
+            customer_code=customer_code,
+        )
+
+        if email_result.get("success"):
+            return (
+                True,
+                "Customer deleted successfully. "
+                "Deletion notification email has been sent to "
+                f"{customer_email}.",
+            )
+
+        # ----------------------------------------------------
+        # Customer was deleted, but email failed
+        # ----------------------------------------------------
+
+        return (
+            True,
+            "Customer deleted successfully, but the "
+            "deletion notification email could not be sent. "
+            f"Email error: {email_result.get('message')}",
+        )
 
     except Exception as e:
 
